@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>[hidden]{display:none!important}body{margin:0}</style></head><body>
+<title>コマ抜き</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* Layout: 編集室のモニター＋トランスポート（左）と、抜いたコマのビン（右）。狭い画面では縦積み */
+:root {
+  --bg: #eef0f3;
+  --panel: #ffffff;
+  --fg: #1b1f27;
+  --muted: #5d6674;
+  --line: #d5d9e0;
+  --stage: #0d0f13;
+  --accent: #2f5bd3;
+  --tally: #d23a2a;
+  --tally-fg: #ffffff;
+  --chip: #e3e7ee;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2b313c;
+    --stage: #07080b; --accent: #7d9cf0; --tally: #e5523f; --tally-fg: #ffffff; --chip: #252b35;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2b313c;
+  --stage: #07080b; --accent: #7d9cf0; --tally: #e5523f; --tally-fg: #ffffff; --chip: #252b35;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: 14px; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 32px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; justify-content: space-between; }
+h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .02em; }
+h1 small { font-weight: 400; color: var(--muted); font-size: 13px; margin-left: 8px; }
+.local { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.local::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #3a9a5b; }
+.grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); }
+.monitor { overflow: hidden; display: flex; flex-direction: column; }
+.stage { position: relative; background: var(--stage); aspect-ratio: 16 / 9; max-width: 100%; display: grid; place-items: center; }
+.stage video { width: 100%; height: 100%; object-fit: contain; display: block; }
+.drop {
+  position: absolute; inset: 12px; border: 1.5px dashed #4a5262; border-radius: 6px; color: #c9cfda;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 16px; cursor: pointer;
+}
+.drop strong { font-size: 16px; color: #f1f3f7; }
+.drop ol { margin: 4px 0 0; padding-left: 1.2em; text-align: left; font-size: 13px; color: #a8b0be; }
+.drop.over, body.dragging .drop { border-color: var(--tally); background: rgba(210,58,42,.08); }
+.hud {
+  position: absolute; left: 10px; top: 10px; font-family: var(--font-mono); font-size: 12px; color: #fff;
+  background: rgba(0,0,0,.55); padding: 2px 8px; border-radius: 4px; pointer-events: none; font-variant-numeric: tabular-nums;
+}
+.transport { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
+.readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 20px; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.tc { font-size: 26px; font-weight: 500; letter-spacing: .02em; }
+.readout .sub { color: var(--muted); font-size: 13px; }
+.readout .sub b { color: var(--fg); font-weight: 500; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.row .spacer { flex: 1; }
+button {
+  font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--chip); color: var(--fg);
+  border-radius: 6px; padding: 7px 12px; cursor: pointer; min-height: 36px; font-variant-numeric: tabular-nums;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+button.mono { font-family: var(--font-mono); }
+.grab {
+  background: var(--tally); color: var(--tally-fg); border-color: var(--tally); font-weight: 700; padding: 8px 18px;
+  display: inline-flex; align-items: center; gap: 8px;
+}
+.grab::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
+.grab:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--tally); }
+.settings { padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: center; border-top: 1px solid var(--line); }
+.label { font-size: 11px; letter-spacing: .08em; color: var(--muted); text-transform: uppercase; font-family: var(--font-mono); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; min-height: 32px; padding: 4px 10px; font-family: var(--font-mono); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+input[type=number], select {
+  font: inherit; font-family: var(--font-mono); font-size: 13px; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; min-height: 32px;
+}
+input[type=number] { width: 88px; }
+.detect { font-size: 12px; color: var(--muted); display: inline-flex; gap: 8px; align-items: center; }
+.detect button { min-height: 28px; padding: 2px 10px; }
+.keys { font-size: 12px; color: var(--muted); padding: 0 14px 12px; }
+kbd { font-family: var(--font-mono); font-size: 11px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--chip); color: var(--fg); }
+.bin { display: flex; flex-direction: column; min-height: 200px; }
+.bin-head { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.bin-head h2 { font-size: 15px; margin: 0; }
+.count { font-family: var(--font-mono); font-size: 12px; background: var(--chip); border-radius: 999px; padding: 0 8px; }
+.bin-list { list-style: none; margin: 0; padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; max-height: 70vh; overflow-y: auto; }
+@media (max-width: 900px) { .bin-list { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); max-height: none; } }
+.shot { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.shot img { width: 100%; aspect-ratio: 16/9; object-fit: contain; background: var(--stage); border-radius: 4px; cursor: zoom-in; display: block; }
+.shot .meta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; display: flex; justify-content: space-between; gap: 4px; }
+.shot .meta b { color: var(--fg); font-weight: 500; }
+.shot .acts { display: flex; gap: 4px; }
+.shot .acts button { flex: 1; min-height: 30px; padding: 2px 4px; font-size: 12px; }
+.empty { padding: 24px 16px; color: var(--muted); font-size: 13px; text-align: center; grid-column: 1 / -1; }
+.empty .frames { display: flex; gap: 4px; justify-content: center; margin-bottom: 10px; }
+.empty .frames span { width: 34px; height: 22px; border: 1px dashed var(--line); border-radius: 3px; }
+.hint { font-size: 12px; color: var(--muted); padding: 0 14px 12px; margin: 0; }
+.lightbox { position: fixed; inset: 0; background: rgba(5,6,9,.88); z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.lightbox img { max-width: 100%; max-height: 78vh; object-fit: contain; }
+.lightbox .cap { color: #e6e9ef; font-family: var(--font-mono); font-size: 13px; text-align: center; }
+.toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(16px + env(safe-area-inset-bottom, 0px)); background: var(--fg); color: var(--bg);
+  padding: 8px 14px; border-radius: 6px; font-size: 13px; z-index: 30; max-width: calc(100% - 32px); }
+@media (prefers-reduced-motion: no-preference) { .flash { animation: flash .25s ease-out; } }
+@keyframes flash { from { box-shadow: inset 0 0 0 4px var(--tally); } to { box-shadow: inset 0 0 0 0 transparent; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>コマ抜き<small>mp4から1コマずつ静止画を切り出す</small></h1>
+    <span class="local">動画はこのブラウザ内だけで処理。どこにも送信しません</span>
+  </header>
+
+  <div class="grid">
+    <section class="panel monitor" aria-label="プレビュー">
+      <div class="stage" id="stage">
+        <video id="video" playsinline muted preload="auto" hidden></video>
+        <div class="hud" id="hud" hidden></div>
+        <label class="drop" id="drop" for="file">
+          <strong>mp4をここにドロップ／タップして選択</strong>
+          <span>H.264が確実。iPhoneのHEVCもChrome・Safariならだいたい開けます</span>
+          <ol>
+            <li>動画を読み込む</li>
+            <li>fpsを合わせて ← → でコマ送り</li>
+            <li>「このコマを抜く」でPNGを確保</li>
+          </ol>
+        </label>
+        <input type="file" id="file" accept="video/mp4,video/quicktime,video/webm,video/*" hidden>
+      </div>
+
+      <div class="transport">
+        <div class="readout">
+          <span class="tc" id="tc">00:00:00:00</span>
+          <span class="sub">フレーム <b id="fnum">0</b> / <span id="fmax">0</span></span>
+          <span class="sub" id="dims"></span>
+        </div>
+        <input type="range" id="seek" min="0" max="0" step="1" value="0" disabled aria-label="フレーム位置">
+        <div class="row">
+          <button class="mono" data-step="-sec" disabled title="Shift+←">−1s</button>
+          <button class="mono" data-step="-1" disabled title="←">−1f</button>
+          <button id="play" disabled title="Space">再生</button>
+          <button class="mono" data-step="1" disabled title="→">+1f</button>
+          <button class="mono" data-step="sec" disabled title="Shift+→">+1s</button>
+          <span class="spacer"></span>
+          <button class="grab" id="grab" disabled title="Enter">このコマを抜く</button>
+        </div>
+      </div>
+
+      <div class="settings">
+        <span class="label">fps</span>
+        <div class="seg" id="fpsSeg" role="group" aria-label="fpsプリセット">
+          <button data-fps="24">24</button>
+          <button data-fps="30" aria-pressed="true">30</button>
+          <button data-fps="60">60</button>
+          <button data-fps="120">120</button>
+        </div>
+        <label class="detect">任意 <input type="number" id="fpsIn" min="1" max="1000" step="0.001" value="30"></label>
+        <span class="detect" id="detect">再生するとfpsを推定します</span>
+        <span class="spacer" style="flex:1"></span>
+        <label class="detect">形式
+          <select id="fmt"><option value="png">PNG</option><option value="jpg">JPEG</option></select>
+        </label>
+        <label class="detect">フレーム番号へ <input type="number" id="jump" min="0" step="1" value="0" disabled></label>
+      </div>
+      <div class="keys"><kbd>←</kbd><kbd>→</kbd> 1コマ　<kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 1秒　<kbd>Space</kbd> 再生/停止　<kbd>Enter</kbd> 抜く</div>
+    </section>
+
+    <section class="panel bin" aria-label="抜いたコマ">
+      <div class="bin-head">
+        <h2>抜いたコマ</h2><span class="count" id="count">0</span>
+        <span style="flex:1"></span>
+        <button id="zip" disabled>まとめてZIP保存</button>
+        <button id="clear" disabled>全消去</button>
+      </div>
+      <ul class="bin-list" id="list">
+        <li class="empty" id="empty"><div class="frames"><span></span><span></span><span></span></div>まだありません。抜いたコマがここに並びます。サムネイルをタップすると拡大表示。</li>
+      </ul>
+      <p class="hint" id="saveHint">保存できない環境では、拡大表示した画像を右クリック／長押しで保存できます。</p>
+    </section>
+  </div>
+</div>
+
+<div class="lightbox" id="lb" hidden>
+  <img id="lbImg" alt="抜いたコマの拡大">
+  <div class="cap" id="lbCap"></div>
+  <div class="row">
+    <button id="lbGo">この位置へ移動</button>
+    <button id="lbSave">保存</button>
+    <button id="lbClose">閉じる</button>
+  </div>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const video = $("video"), seek = $("seek"), fileIn = $("file"), drop = $("drop");
+  let fps = 30, srcURL = null, baseName = "video", shots = [], nextId = 1, dl = null;
+  let pendingT = null, seekBusy = false, lbShot = null;
+  const hasRVFC = "requestVideoFrameCallback" in HTMLVideoElement.prototype;
+
+  // ---- 保存 (downloads capability) ----
+  try {
+    window.claude?.use?.("downloads").then((d) => { dl = d; }).catch(() => {});
+  } catch (_) {}
+
+  async function saveFile(filename, data) {
+    if (!dl && !window.claude) {
+      // ローカル実行（file://など）: 普通のダウンロードで保存
+      const a = document.createElement("a"); const u = URL.createObjectURL(data instanceof Blob ? data : new Blob([data]));
+      a.href = u; a.download = filename; document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 4000); toast("保存しました: " + filename); return;
+    }
+    if (!dl) { toast("この画面では直接保存できません。拡大表示して右クリック／長押しで保存してください"); return; }
+    try { await dl.save({ filename, data }); toast("保存しました: " + filename); }
+    catch (e) {
+      if (e?.code === "declined") toast("保存をキャンセルしました");
+      else if (e?.code === "rate_limited") toast("保存確認が開いています。少し待ってから再度どうぞ");
+      else toast("保存できませんでした（" + (e?.code || "unknown") + "）");
+    }
+  }
+
+  let toastT;
+  function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => (t.hidden = true), 2800); }
+
+  // ---- 計算 ----
+  const tcFps = () => Math.max(1, Math.round(fps));
+  const maxFrame = () => Math.max(0, Math.floor((video.duration || 0) * fps - 1e-6) );
+  const curFrame = () => Math.min(maxFrame(), Math.max(0, Math.floor(video.currentTime * fps + 1e-3)));
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  function timecode(frame) {
+    const r = tcFps();
+    const totalSec = Math.floor(frame / fps + 1e-6);
+    const ff = Math.min(r - 1, Math.floor(frame - totalSec * fps + 1e-6));
+    return `${pad(Math.floor(totalSec / 3600))}:${pad(Math.floor(totalSec / 60) % 60)}:${pad(totalSec % 60)}:${pad(ff, String(r - 1).length)}`;
+  }
+  const frameCenter = (f) => Math.min((video.duration || 0) - 1e-4, (f + 0.5) / fps);
+
+  // ---- シーク（1本ずつ順番に処理） ----
+  function seekTo(t) {
+    return new Promise((res) => {
+      if (!video.seeking && Math.abs(video.currentTime - t) < 1e-5) return res();
+      const done = () => res();
+      video.addEventListener("seeked", done, { once: true });
+      setTimeout(done, 1500);
+      video.currentTime = t;
+    });
+  }
+  function requestSeek(t) { pendingT = Math.max(0, t); if (!seekBusy) pump(); }
+  async function pump() {
+    seekBusy = true;
+    while (pendingT !== null) { const t = pendingT; pendingT = null; await seekTo(t); updateUI(); }
+    seekBusy = false; updateUI();
+  }
+  async function settled() { while (seekBusy) await new Promise((r) => setTimeout(r, 16)); }
+  function waitPaint() {
+    return new Promise((res) => {
+      if (!hasRVFC) return requestAnimationFrame(() => requestAnimationFrame(res));
+      let done = false; const fin = () => { if (!done) { done = true; res(); } };
+      video.requestVideoFrameCallback(fin); setTimeout(fin, 120);
+    });
+  }
+  function goFrame(f) { video.pause(); requestSeek(frameCenter(Math.min(maxFrame(), Math.max(0, f)))); }
+
+  // ---- 読み込み ----
+  function loadFile(file) {
+    if (!file) return;
+    if (!/^video\//.test(file.type) && !/\.(mp4|m4v|mov|webm)$/i.test(file.name)) { toast("動画ファイルを選んでください"); return; }
+    if (srcURL) URL.revokeObjectURL(srcURL);
+    srcURL = URL.createObjectURL(file);
+    baseName = file.name.replace(/\.[^.]+$/, "").replace(/[\\/:*?"<>|]/g, "_") || "video";
+    fpsSamples = [];
+    $("detect").textContent = "再生するとfpsを推定します";
+    video.src = srcURL;
+  }
+  video.addEventListener("loadedmetadata", () => {
+    video.hidden = false; drop.hidden = true; $("hud").hidden = false;
+    $("stage").style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+    $("dims").textContent = `${video.videoWidth}×${video.videoHeight} · ${video.duration.toFixed(2)}s`;
+    document.querySelectorAll("[data-step], #play, #grab, #seek, #jump").forEach((b) => (b.disabled = false));
+    requestSeek(frameCenter(0));
+  });
+  video.addEventListener("error", () => {
+    toast("この動画はブラウザで再生できない形式です（コーデック非対応の可能性）");
+    video.hidden = true; drop.hidden = false; $("hud").hidden = true;
+  });
+  fileIn.addEventListener("change", () => { loadFile(fileIn.files[0]); fileIn.value = ""; });
+  ["dragenter", "dragover"].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); document.body.classList.add("dragging"); }));
+  ["dragleave", "drop"].forEach((ev) => document.addEventListener(ev, (e) => { e.preventDefault(); if (ev === "drop" || e.target === document.documentElement) document.body.classList.remove("dragging"); }));
+  document.addEventListener("drop", (e) => { document.body.classList.remove("dragging"); loadFile(e.dataTransfer?.files?.[0]); });
+  // 動画読込後もステージクリックで差し替え可
+  $("stage").addEventListener("dblclick", () => fileIn.click());
+
+  // ---- UI更新 ----
+  function updateUI() {
+    if (!video.duration) return;
+    const f = curFrame(), m = maxFrame();
+    $("tc").textContent = timecode(f);
+    $("fnum").textContent = f; $("fmax").textContent = m;
+    $("hud").textContent = `F${f}`;
+    seek.max = m; if (document.activeElement !== seek) seek.value = f;
+    $("jump").max = m;
+    $("play").textContent = video.paused ? "再生" : "停止";
+  }
+  video.addEventListener("timeupdate", updateUI);
+  video.addEventListener("play", updateUI);
+  video.addEventListener("pause", updateUI);
+
+  // ---- fps推定（rVFCでフレーム間隔を測る） ----
+  let fpsSamples = [], lastMT = null, lastPF = null;
+  const COMMON = [23.976, 24, 25, 29.97, 30, 48, 50, 59.94, 60, 90, 100, 119.88, 120, 240];
+  function rvfcLoop(_, md) {
+    if (!video.paused && lastMT !== null && md.presentedFrames - lastPF === 1) {
+      const d = md.mediaTime - lastMT;
+      if (d > 0.001 && d < 0.2) fpsSamples.push(d);
+      if (fpsSamples.length > 240) fpsSamples.shift();
+      if (fpsSamples.length >= 20 && fpsSamples.length % 10 === 0) showEstimate();
+    }
+    lastMT = md.mediaTime; lastPF = md.presentedFrames;
+    if (!video.paused) updateUI();
+    video.requestVideoFrameCallback(rvfcLoop);
+  }
+  if (hasRVFC) video.requestVideoFrameCallback(rvfcLoop);
+  else $("detect").textContent = "このブラウザはfps推定に非対応";
+  function showEstimate() {
+    const s = [...fpsSamples].sort((a, b) => a - b);
+    const est = 1 / s[Math.floor(s.length / 2)];
+    const snap = COMMON.find((c) => Math.abs(c - est) / c < 0.012);
+    const v = snap ?? Math.round(est * 100) / 100;
+    const box = $("detect"); box.textContent = "";
+    const span = document.createElement("span"); span.textContent = `推定 約${v}fps`;
+    const b = document.createElement("button"); b.textContent = "反映";
+    b.addEventListener("click", () => setFps(v));
+    box.append(span, b);
+  }
+
+  // ---- fps設定 ----
+  function setFps(v) {
+    v = Number(v); if (!(v > 0 && v <= 1000)) return;
+    const t = video.currentTime;
+    fps = v; $("fpsIn").value = v;
+    document.querySelectorAll("#fpsSeg button").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.fps) === v)));
+    try { localStorage.setItem("komanuki-fps", String(v)); } catch (_) {}
+    if (video.duration) requestSeek(frameCenter(Math.floor(t * fps + 1e-3)));
+    updateUI();
+  }
+  document.querySelectorAll("#fpsSeg button").forEach((b) => b.addEventListener("click", () => setFps(b.dataset.fps)));
+  $("fpsIn").addEventListener("change", (e) => setFps(e.target.value));
+  try { const s = localStorage.getItem("komanuki-fps"); if (s) setFps(s); } catch (_) {}
+
+  // ---- 操作 ----
+  document.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", () => step(b.dataset.step)));
+  function step(kind) {
+    const f = curFrame();
+    const d = kind === "sec" ? Math.round(fps) : kind === "-sec" ? -Math.round(fps) : Number(kind);
+    goFrame(f + d);
+  }
+  $("play").addEventListener("click", togglePlay);
+  function togglePlay() { if (!video.duration) return; video.paused ? video.play().catch(() => {}) : video.pause(); }
+  video.addEventListener("pause", () => { if (video.duration) requestSeek(frameCenter(curFrame())); });
+  seek.addEventListener("input", () => goFrame(Number(seek.value)));
+  $("jump").addEventListener("change", (e) => goFrame(Math.round(Number(e.target.value) || 0)));
+
+  // ---- 抜く ----
+  const canvas = document.createElement("canvas");
+  async function grab() {
+    if (!video.duration) return;
+    video.pause();
+    await settled();
+    const f = curFrame();
+    if (Math.abs(video.currentTime - frameCenter(f)) > 1e-4) { requestSeek(frameCenter(f)); await settled(); }
+    await waitPaint();
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(video, 0, 0);
+    const fmt = $("fmt").value;
+    const blob = await new Promise((r) => canvas.toBlob(r, fmt === "jpg" ? "image/jpeg" : "image/png", 0.95));
+    if (!blob) { toast("画像化に失敗しました"); return; }
+    const shot = { id: nextId++, frame: f, tc: timecode(f), fps, ext: fmt, blob, url: URL.createObjectURL(blob),
+      name: `${baseName}_f${pad(f, 6)}.${fmt}` };
+    shots.push(shot); shots.sort((a, b) => a.frame - b.frame || a.id - b.id);
+    renderList();
+    const st = $("stage"); st.classList.remove("flash"); void st.offsetWidth; st.classList.add("flash");
+  }
+  $("grab").addEventListener("click", grab);
+
+  // ---- ビン ----
+  function renderList() {
+    const list = $("list");
+    list.querySelectorAll(".shot").forEach((n) => n.remove());
+    $("empty").hidden = shots.length > 0;
+    $("count").textContent = shots.length;
+    $("zip").disabled = $("clear").disabled = shots.length === 0;
+    for (const s of shots) {
+      const li = document.createElement("li"); li.className = "shot";
+      const img = document.createElement("img"); img.src = s.url; img.alt = `フレーム${s.frame}`;
+      img.addEventListener("click", () => openLB(s));
+      const meta = document.createElement("div"); meta.className = "meta";
+      meta.innerHTML = `<b>F${s.frame}</b><span>${s.tc}</span>`;
+      const acts = document.createElement("div"); acts.className = "acts";
+      const sv = document.createElement("button"); sv.textContent = "保存"; sv.addEventListener("click", () => saveFile(s.name, s.blob));
+      const go = document.createElement("button"); go.textContent = "移動"; go.addEventListener("click", () => goFrame(Math.round(s.frame * fps / s.fps)));
+      const del = document.createElement("button"); del.textContent = "削除"; del.addEventListener("click", () => removeShot(s.id));
+      acts.append(sv, go, del);
+      li.append(img, meta, acts); list.append(li);
+    }
+  }
+  function removeShot(id) {
+    const i = shots.findIndex((s) => s.id === id); if (i < 0) return;
+    URL.revokeObjectURL(shots[i].url); shots.splice(i, 1); renderList();
+  }
+  let clearArmed = false, clearT;
+  $("clear").addEventListener("click", (e) => {
+    if (!clearArmed) { clearArmed = true; e.target.textContent = "本当に消す？"; clearT = setTimeout(() => { clearArmed = false; e.target.textContent = "全消去"; }, 3000); return; }
+    clearTimeout(clearT); clearArmed = false; e.target.textContent = "全消去";
+    shots.forEach((s) => URL.revokeObjectURL(s.url)); shots = []; renderList();
+  });
+  $("zip").addEventListener("click", async () => {
+    if (!window.JSZip) { toast("ZIP機能を読み込めませんでした。1枚ずつ保存してください"); return; }
+    const zip = new JSZip();
+    const used = new Set();
+    for (const s of shots) { let n = s.name, k = 2; while (used.has(n)) n = s.name.replace(/(\.\w+)$/, `_${k++}$1`); used.add(n); zip.file(n, s.blob); }
+    toast("ZIPを作成中…");
+    const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
+    saveFile(`${baseName}_frames.zip`, blob);
+  });
+
+  // ---- 拡大表示 ----
+  function openLB(s) { lbShot = s; $("lbImg").src = s.url; $("lbCap").textContent = `${s.name}  ·  ${s.tc}  ·  ${s.fps}fps`; $("lb").hidden = false; $("lbClose").focus(); }
+  function closeLB() { $("lb").hidden = true; lbShot = null; }
+  $("lbClose").addEventListener("click", closeLB);
+  $("lb").addEventListener("click", (e) => { if (e.target === $("lb")) closeLB(); });
+  $("lbSave").addEventListener("click", () => lbShot && saveFile(lbShot.name, lbShot.blob));
+  $("lbGo").addEventListener("click", () => { if (lbShot) { goFrame(Math.round(lbShot.frame * fps / lbShot.fps)); closeLB(); } });
+
+  // ---- キーボード ----
+  document.addEventListener("keydown", (e) => {
+    if (!$("lb").hidden) { if (e.key === "Escape") closeLB(); return; }
+    const tag = e.target.tagName;
+    if (tag === "INPUT" && e.target.type !== "range") return;
+    if (tag === "SELECT" || !video.duration) return;
+    if (e.key === "ArrowRight") { e.preventDefault(); step(e.shiftKey ? "sec" : "1"); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); step(e.shiftKey ? "-sec" : "-1"); }
+    else if (e.key === " " && tag !== "BUTTON") { e.preventDefault(); togglePlay(); }
+    else if (e.key === "Enter" && tag !== "BUTTON") { e.preventDefault(); grab(); }
+  });
+})();
+</script>
+
+</body></html>
